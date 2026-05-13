@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nn-arch · Lit Components</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=DM+Mono:wght@300;400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+  <p class="page-title">nn-arch components · Library demo</p>
+
+  <nn-frame>
+    <nn-layer
+      name="Input Tokens"
+      out_dims="(batch, seq_len)"
+      description="It can be represented as a sequence of integer IDs, which conceptually acts as a one-hot encoding matrix of dimension (batch, seq_len, vocab_size). These tokens are obtained by processing the original raw text through a tokenizer."
+      code="input_ids = tokenizer(raw_text, return_tensors='pt')['input_ids']"
+    ></nn-layer>
+
+    <nn-layer-group label="Embeddings Computation" columns="2">
+
+      <nn-layer
+        name="Embedding"
+        out_dims="(batch, seq_len, d_model)"
+        description="This layer acts as a lookup table mapping each discrete token ID to a dense, continuous vector of size d_model. While mathematically equivalent to multiplying the one-hot encoded tokens by the embedding weight matrix (W_E), it is implemented as a highly efficient index-based array lookup."
+        code="class Embed(nn.Module):
+  def __init__(self, cfg: Config):
+    super().__init__()
+    self.cfg = cfg
+    self.W_E = nn.Parameter(t.empty((cfg.d_vocab, cfg.d_model)))
+    nn.init.normal_(self.W_E, std=self.cfg.init_range)
+
+  def forward(self, tokens: Int[Tensor, 'batch position']) -> Float[Tensor, 'batch position d_model']:    
+    return self.W_E[tokens]">
+      </nn-layer>
+
+      <nn-layer
+        name="Positional Embedding"
+        out_dims="(batch, seq_len, d_model)"
+        description="Because attention mechanisms are inherently permutation invariant, this layer injects spatial context. It learns a unique vector for each position in the sequence up to the maximum context length. These learned positional vectors are then broadcasted across the batch."
+        code="class PosEmbed(nn.Module):
+  def __init__(self, cfg: Config):
+    super().__init__()
+    self.cfg = cfg
+    self.W_pos = nn.Parameter(t.empty((cfg.n_ctx, cfg.d_model)))
+    nn.init.normal_(self.W_pos, std=self.cfg.init_range)
+
+  def forward(self, tokens: Int[Tensor, 'batch position']) -> Float[Tensor, 'batch position d_model']:
+    batch, seq_len = tokens.shape
+
+    return einops.repeat(self.W_pos[:seq_len], 'seq d_model -> batch seq d_model', batch=batch)">
+      </nn-layer>
+    </nn-layer-group>
+
+    <nn-layer
+      name="Complete Embeddings"
+      out_dims="(batch, seq_len, d_model)"
+      description="This step combines the token's semantic identity (what the word is) with its spatial position (where the word is) via an element wise addition. This combined tensor forms the initial 'residual stream' that gets passed into the subsequent Transformer blocks."
+      code="embeddings = token_embeddings + pos_embeddings"
+    ></nn-layer>
+    
+    <nn-layer-group label="Transformer Blocks Sequence" text="Repeat n_layer" columns="1">
+      <nn-layer
+        name="Transformer Block"
+        out_dims="(batch, seq_len, d_model)"
+        description="The core processing engine of the model. It contains two main sub-layers: Self-Attention (where tokens gather information from each other) and an MLP (where each token thinks about that information individually). Crucially, it uses residual connections (adding the input to the output), meaning the overall tensor shape never changes, allowing us to stack multiple blocks on top of each other."
+        code="class TransformerBlock(nn.Module):
+  def __init__(self, cfg: Config):
+    super().__init__()
+    self.ln1 = nn.LayerNorm(cfg.d_model)
+    self.attn = Attention(cfg)
+    self.ln2 = nn.LayerNorm(cfg.d_model)
+    self.mlp = MLP(cfg)
+
+  def forward(self, x: Float[Tensor, 'batch seq d_model']) -> Float[Tensor, 'batch seq d_model']:
+    # 1. Attention (Communication)
+    x = x + self.attn(self.ln1(x))
+    
+    # 2. MLP (Computation)
+    x = x + self.mlp(self.ln2(x))
+    
+    return x"
+      ></nn-layer>
+    </nn-layer-group>
+
+    <nn-layer
+      name="Unembed"
+      out_dims="(batch, seq_len, d_vocab)"
+      description="This step transforms the final normalized residual stream back into the vocabulary space. It applies a linear transformation (matrix multiplication with the unembedding weights, plus a bias) to calculate the unnormalized predictions (logits) for every possible next token in the vocabulary."
+      code="class Unembed(nn.Module):
+  def __init__(self, cfg):
+    super().__init__()
+    self.cfg = cfg
+    self.W_U = nn.Parameter(t.empty((cfg.d_model, cfg.d_vocab)))
+    nn.init.normal_(self.W_U, std=self.cfg.init_range)
+    self.b_U = nn.Parameter(t.zeros((cfg.d_vocab), requires_grad=False))
+
+  def forward(self, normalized_resid_final: Float[Tensor, 'batch position d_model']) -> Float[Tensor, 'batch position d_vocab']:
+
+    out = einops.einsum(normalized_resid_final, self.W_U, 'batch position d_model, d_model d_vocab -> batch position d_vocab') + self.b_U
+    return out"
+    ></nn-layer>
+  </nn-frame>
+
+
+  <script type="module" src="../src/register.js"></script>
+</body>
+</html>
